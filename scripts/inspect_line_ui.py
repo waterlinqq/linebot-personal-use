@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+import psutil
+
 
 def main() -> None:
     if sys.platform != "win32":
@@ -28,8 +30,11 @@ def main() -> None:
     for child in root.GetChildren():
         if child.ControlType != auto.ControlType.WindowControl:
             continue
-        name = child.Name or ""
-        if "LINE" in name.upper():
+        try:
+            process_name = psutil.Process(int(child.ProcessId)).name().lower()
+        except (psutil.Error, OSError):
+            continue
+        if process_name == "line.exe":
             line_windows.append(child)
 
     if not line_windows:
@@ -37,7 +42,12 @@ def main() -> None:
         sys.exit(2)
 
     window = line_windows[0]
-    print(f"LINE 視窗: {window.Name!r} / ClassName={window.ClassName!r}")
+    process_name = psutil.Process(int(window.ProcessId)).name()
+    print(
+        f"LINE 視窗: {window.Name!r} / "
+        f"ClassName={window.ClassName!r} / "
+        f"PID={window.ProcessId} / Process={process_name!r}"
+    )
     print("-" * 60)
 
     def walk(control: auto.Control, depth: int, prefix: str = "") -> None:
