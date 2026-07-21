@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LINE 搶單 Bot 後台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f6f8;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --primary: #06c755;
+      --danger: #ef4444;
+      --border: #e5e7eb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    h1 { margin: 0 0 8px; font-size: 28px; }
+    .sub { color: var(--muted); margin-bottom: 24px; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: 18px;
+    }
+    .status-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .badge.on { background: #dcfce7; color: #166534; }
+    .badge.off { background: #fee2e2; color: #991b1b; }
+    button, input, select, textarea {
+      font: inherit;
+    }
+    button {
+      border: none;
+      border-radius: 8px;
+      padding: 10px 14px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-danger { background: var(--danger); color: white; }
+    .btn-secondary { background: #e5e7eb; color: var(--text); }
+    input, select, textarea {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    textarea { min-height: 120px; resize: vertical; font-family: ui-monospace, monospace; }
+    .field { margin-bottom: 12px; }
+    label { display: block; margin-bottom: 6px; font-weight: 600; }
+    .hint { color: var(--muted); font-size: 13px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      border-bottom: 1px solid var(--border);
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .ok { color: #166534; font-weight: 700; }
+    .no { color: #991b1b; }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>LINE 搶單 Bot</h1>
+    <p class="sub">Phase 2：Windows LINE.exe 自動化 + 規則引擎 + 本機後台</p>
+
+    <div class="card">
+      <h2>監控狀態</h2>
+      <div class="status-row">
+        <span id="statusBadge" class="badge off">停止中</span>
+        <span id="connectorType" class="hint"></span>
+        <span id="counters" class="hint"></span>
+      </div>
+      <div class="status-row" style="margin-top: 12px; flex-direction: column; align-items: stretch;">
+        <label for="groupName" style="font-weight: 600;">群組名稱（僅供紀錄，需先手動開啟聊天室）</label>
+        <input id="groupName" value="優先承攬-尊爵會員" />
+        <p class="hint" style="margin: 6px 0 0;">Windows：請先在 LINE 手動點開目標群組，再按「開始監控」。</p>
+        <div class="status-row" style="margin-top: 8px;">
+          <button class="btn-primary" onclick="startBot()">開始監控</button>
+          <button class="btn-danger" onclick="stopBot()">停止監控</button>
+          <button class="btn-secondary" onclick="refreshAll()">重新整理</button>
+        </div>
+      </div>
+      <p id="lastAction" class="hint" style="margin-top: 8px;"></p>
+      <pre id="diagnostics" class="hint" style="white-space: pre-wrap; margin-top: 8px;"></pre>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>地區設定</h2>
+        <div class="field">
+          <label for="matchMode">匹配模式</label>
+          <select id="matchMode">
+            <option value="either">起點或終點任一符合</option>
+            <option value="both">起點與終點都要符合</option>
+            <option value="origin_only">只看起點</option>
+            <option value="dest_only">只看終點</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="replyText">回覆文字</label>
+          <input id="replyText" value="接" />
+        </div>
+        <div class="field">
+          <label for="excludeKeywords">排除關鍵字（每行一個）</label>
+          <textarea id="excludeKeywords"></textarea>
+        </div>
+        <div class="field">
+          <label for="regionsJson">地區關鍵字 JSON</label>
+          <textarea id="regionsJson"></textarea>
+          <p class="hint">格式：{"台南":["台南","歸仁"], "高雄":["高雄","鳳山"]}</p>
+        </div>
+        <button class="btn-primary" onclick="saveConfig()">儲存設定</button>
+        <button class="btn-secondary" onclick="reloadDefaults()">合併最新預設地區</button>
+        <p id="regionStats" class="hint" style="margin-top: 8px;"></p>
+      </div>
+
+      <div class="card">
+        <h2>測試訊息</h2>
+        <div class="field">
+          <label for="testText">輸入派單文字</label>
+          <textarea id="testText">07.03 14:00 小港 小港 5300</textarea>
+        </div>
+        <div class="status-row">
+          <button class="btn-secondary" onclick="evaluateText()">僅判斷</button>
+          <button class="btn-primary" onclick="injectMock()">模擬收到訊息</button>
+        </div>
+        <pre id="evaluateResult" class="hint" style="white-space: pre-wrap; margin-top: 12px;"></pre>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>訊息紀錄</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>時間</th>
+            <th>內容</th>
+            <th>派單</th>
+            <th>符合</th>
+            <th>已回</th>
+            <th>地區</th>
+            <th>原因</th>
+          </tr>
+        </thead>
+        <tbody id="logBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        headers: { "Content-Type": "application/json" },
+        ...options,
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || res.statusText);
+      }
+      return res.json();
+    }
+
+    function setStatus(data) {
+      const badge = document.getElementById("statusBadge");
+      badge.textContent = data.running ? "監控中" : "停止中";
+      badge.className = "badge " + (data.running ? "on" : "off");
+      document.getElementById("connectorType").textContent =
+        `連接器：${data.connector_type} / 連線：${data.connected ? "是" : "否"}`;
+      document.getElementById("counters").textContent =
+        `已處理 ${data.processed_count} 則 / 已回覆 ${data.replied_count} 則`;
+      document.getElementById("lastAction").textContent =
+        data.last_action ? `最後動作：${data.last_action}` : "";
+      document.getElementById("diagnostics").textContent =
+        data.diagnostics ? JSON.stringify(data.diagnostics, null, 2) : "";
+      if (data.group_name) {
+        document.getElementById("groupName").value = data.group_name;
+      }
+    }
+
+    async function refreshStatus() {
+      setStatus(await api("/api/status"));
+    }
+
+    async function loadConfig() {
+      const config = await api("/api/config");
+      const stats = await api("/api/config/stats");
+      document.getElementById("matchMode").value = config.match_mode;
+      document.getElementById("replyText").value = config.reply_text;
+      document.getElementById("excludeKeywords").value =
+        (config.exclude_keywords || []).join("\n");
+      document.getElementById("regionsJson").value =
+        JSON.stringify(config.regions || {}, null, 2);
+      document.getElementById("regionStats").textContent =
+        Object.entries(stats).map(([k, v]) => `${k}: ${v} 個關鍵字`).join(" / ");
+    }
+
+    async function reloadDefaults() {
+      await api("/api/config/reload-defaults", { method: "POST" });
+      await loadConfig();
+      alert("已合併最新預設地區關鍵字");
+    }
+
+    async function saveConfig() {
+      let regions;
+      try {
+        regions = JSON.parse(document.getElementById("regionsJson").value);
+      } catch (err) {
+        alert("地區 JSON 格式錯誤");
+        return;
+      }
+
+      const excludeKeywords = document
+        .getElementById("excludeKeywords")
+        .value
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      await api("/api/config", {
+        method: "PUT",
+        body: JSON.stringify({
+          match_mode: document.getElementById("matchMode").value,
+          reply_text: document.getElementById("replyText").value,
+          min_price: 0,
+          max_price: 999999,
+          exclude_keywords: excludeKeywords,
+          regions,
+        }),
+      });
+      alert("設定已儲存");
+    }
+
+    async function startBot() {
+      const groupName = document.getElementById("groupName").value.trim();
+      setStatus(await api("/api/start", {
+        method: "POST",
+        body: JSON.stringify({ group_name: groupName }),
+      }));
+    }
+
+    async function stopBot() {
+      setStatus(await api("/api/stop", { method: "POST" }));
+    }
+
+    async function evaluateText() {
+      const text = document.getElementById("testText").value;
+      const result = await api("/api/evaluate", {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      });
+      document.getElementById("evaluateResult").textContent =
+        JSON.stringify(result, null, 2);
+    }
+
+    async function injectMock() {
+      const text = document.getElementById("testText").value;
+      await api("/api/mock/message", {
+        method: "POST",
+        body: JSON.stringify({ text }),
+      });
+      await evaluateText();
+      await refreshLogs();
+      await refreshStatus();
+    }
+
+    async function refreshLogs() {
+      const data = await api("/api/logs?limit=50");
+      const body = document.getElementById("logBody");
+      body.innerHTML = data.logs.map((log) => `
+        <tr>
+          <td>${log.created_at || ""}</td>
+          <td>${escapeHtml(log.raw_text || "")}</td>
+          <td class="${log.is_order ? "ok" : "no"}">${log.is_order ? "是" : "否"}</td>
+          <td class="${log.should_reply ? "ok" : "no"}">${log.should_reply ? "是" : "否"}</td>
+          <td class="${log.replied ? "ok" : "no"}">${log.replied ? "是" : "否"}</td>
+          <td>${(log.matched_regions || []).join("、")}</td>
+          <td>${escapeHtml(log.reason || "")}</td>
+        </tr>
+      `).join("");
+    }
+
+    function escapeHtml(text) {
+      return text
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+    }
+
+    async function refreshAll() {
+      await refreshStatus();
+      await loadConfig();
+      await refreshLogs();
+    }
+
+    refreshAll();
+    setInterval(refreshStatus, 5000);
+  </script>
+</body>
+</html>
