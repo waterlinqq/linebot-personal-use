@@ -6,6 +6,21 @@ from typing import Any
 from server.connector.line_win.types import ChatLineMessage
 from server.connector.line_win.ui import LineUIClient, is_noise_message, message_fingerprint
 
+LINE_PROCESS_NAMES = {"line.exe"}
+
+
+def get_process_name(process_id: int) -> str:
+    import psutil
+
+    try:
+        return psutil.Process(process_id).name().lower()
+    except (psutil.Error, OSError):
+        return ""
+
+
+def is_line_process(process_id: int) -> bool:
+    return get_process_name(process_id) in LINE_PROCESS_NAMES
+
 
 class WinLineUIClient(LineUIClient):
     """透過 Windows UI Automation 操作 LINE.exe。"""
@@ -16,6 +31,9 @@ class WinLineUIClient(LineUIClient):
         self._window: Any = None
         self._last_error = ""
         self._auto_module: Any = None
+        self._window_name = ""
+        self._process_id = 0
+        self._process_name = ""
 
     @property
     def _auto(self) -> Any:
@@ -32,6 +50,9 @@ class WinLineUIClient(LineUIClient):
             return False
         try:
             self._window.SetFocus()
+            self._window_name = self._window.Name or ""
+            self._process_id = int(self._window.ProcessId)
+            self._process_name = get_process_name(self._process_id)
             self._last_error = ""
             return True
         except Exception as exc:  # noqa: BLE001
@@ -82,17 +103,12 @@ class WinLineUIClient(LineUIClient):
         edit.SendKeys("{Enter}", waitTime=0)
 
     def get_diagnostics(self) -> dict:
-        window_name = ""
-        if self._window is not None:
-            try:
-                window_name = self._window.Name or ""
-            except Exception:  # noqa: BLE001
-                window_name = ""
-
         return {
             "platform": sys.platform,
             "window_found": self._window is not None,
-            "window_name": window_name,
+            "window_name": self._window_name,
+            "process_id": self._process_id,
+            "process_name": self._process_name,
             "last_error": self._last_error,
         }
 
@@ -102,15 +118,13 @@ class WinLineUIClient(LineUIClient):
         for control in root.GetChildren():
             if control.ControlType != self._auto.ControlType.WindowControl:
                 continue
-            name = (control.Name or "").upper()
-            class_name = (control.ClassName or "").upper()
-            if "LINE" in name or "LINE" in class_name:
+            if is_line_process(int(control.ProcessId)):
                 candidates.append(control)
 
         if not candidates:
             return None
 
-        # 優先選擇標題較完整的視窗
+        # LINE.exe 可能同時有登入或聊天視窗，優先選標題較完整者。
         candidates.sort(key=lambda item: len(item.Name or ""), reverse=True)
         return candidates[0]
 

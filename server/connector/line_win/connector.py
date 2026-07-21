@@ -10,7 +10,7 @@ from server.connector.line_win.com_init import uiautomation_thread_context
 from server.connector.line_win.types import ChatLineMessage
 from server.connector.line_win.ui import LineUIClient
 
-CONNECTOR_VERSION = "2.2"
+CONNECTOR_VERSION = "2.3"
 
 
 class LineWinConnector(LineConnector):

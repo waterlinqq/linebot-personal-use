@@ -114,8 +114,6 @@
         <span id="counters" class="hint"></span>
       </div>
       <div class="status-row" style="margin-top: 12px; flex-direction: column; align-items: stretch;">
-        <label for="groupName" style="font-weight: 600;">群組名稱（僅供紀錄，需先手動開啟聊天室）</label>
-        <input id="groupName" value="優先承攬-尊爵會員" />
         <p class="hint" style="margin: 6px 0 0;">Windows：請先在 LINE 手動點開目標群組，再按「開始監控」。</p>
         <div class="status-row" style="margin-top: 8px;">
           <button class="btn-primary" onclick="startBot()">開始監控</button>
@@ -271,10 +269,9 @@
     }
 
     async function startBot() {
-      const groupName = document.getElementById("groupName").value.trim();
       setStatus(await api("/api/start", {
         method: "POST",
-        body: JSON.stringify({ group_name: groupName }),
+        body: JSON.stringify({}),
       }));
     }
 

@@ -57,12 +57,12 @@ python -m server.main --connector auto
 1. 安裝並登入 [LINE 桌面版](https://line.me/download)
 2. **手動點開**目標群組聊天室（例如：優先承攬-尊爵會員）
 3. 電腦不要休眠，LINE 視窗保持可見
-4. 後台點「**開始監控**」（群組名稱欄僅供紀錄）
+4. 後台點「**開始監控**」
 5. Bot 會監聽**目前畫面上**的聊天室新訊息並自動回「接」
 
 ### 常見錯誤：`CoInitialize has not been called`
 
-1. **確認已更新到最新版**（後台 diagnostics 應有 `connector_version: "2.2"`）
+1. **確認已更新到最新版**（後台 diagnostics 應有 `connector_version: "2.3"`）
 2. **Windows 重新安裝依賴**（Python 3.13 需要 comtypes >= 1.4.8）：
    ```powershell
    pip install -U -r requirements-windows.txt

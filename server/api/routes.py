@@ -11,7 +11,7 @@ router = APIRouter()
 
 
 class StartRequest(BaseModel):
-    group_name: str = "優先承攬-尊爵會員"
+    group_name: str = ""
 
 
 class EvaluateRequest(BaseModel):
@@ -32,7 +32,10 @@ def index() -> FileResponse:
     from pathlib import Path
 
     web_path = Path(__file__).resolve().parents[2] / "web" / "index.html"
-    return FileResponse(web_path)
+    return FileResponse(
+        web_path,
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
 
 
 @router.get("/api/status")
