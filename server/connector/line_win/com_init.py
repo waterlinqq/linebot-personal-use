@@ -5,6 +5,12 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 
+def _reset_automation_client(auto_module: Any) -> None:
+    client_cls = getattr(auto_module, "_AutomationClient", None)
+    if client_cls is not None:
+        client_cls._instance = None
+
+
 @contextmanager
 def uiautomation_thread_context() -> Iterator[Any]:
     """在背景執行緒初始化 COM + UIAutomation。"""
@@ -14,8 +20,7 @@ def uiautomation_thread_context() -> Iterator[Any]:
 
     import uiautomation as auto
 
-    # 若主執行緒曾建立過 COM client，清掉 singleton 讓此執行緒重建
-    auto._AutomationClient._instance = None  # noqa: SLF001
+    _reset_automation_client(auto)
 
     initializer = auto.UIAutomationInitializerInThread(debug=False)
     try:

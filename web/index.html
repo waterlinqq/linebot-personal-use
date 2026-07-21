@@ -215,9 +215,6 @@
         data.last_action ? `最後動作：${data.last_action}` : "";
       document.getElementById("diagnostics").textContent =
         data.diagnostics ? JSON.stringify(data.diagnostics, null, 2) : "";
-      if (data.group_name) {
-        document.getElementById("groupName").value = data.group_name;
-      }
     }
 
     async function refreshStatus() {

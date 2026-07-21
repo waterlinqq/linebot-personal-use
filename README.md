@@ -62,7 +62,7 @@ python -m server.main --connector auto
 
 ### 常見錯誤：`CoInitialize has not been called`
 
-1. **確認已更新到最新版**（後台 diagnostics 應有 `connector_version: "2.1"`）
+1. **確認已更新到最新版**（後台 diagnostics 應有 `connector_version: "2.2"`）
 2. **Windows 重新安裝依賴**（Python 3.13 需要 comtypes >= 1.4.8）：
    ```powershell
    pip install -U -r requirements-windows.txt
