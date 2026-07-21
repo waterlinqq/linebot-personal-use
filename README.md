@@ -62,7 +62,12 @@ python -m server.main --connector auto
 
 ### 常見錯誤：`CoInitialize has not been called`
 
-監控執行緒已使用 `UIAutomationInitializerInThread` 初始化 COM。若仍出現此錯誤，請更新程式後重啟 Bot。
+1. **確認已更新到最新版**（後台 diagnostics 應有 `connector_version: "2.1"`）
+2. **Windows 重新安裝依賴**（Python 3.13 需要 comtypes >= 1.4.8）：
+   ```powershell
+   pip install -U -r requirements-windows.txt
+   ```
+3. 重啟 Bot 後再按「開始監控」
 
 ### UI 除錯（讀不到訊息時）
 

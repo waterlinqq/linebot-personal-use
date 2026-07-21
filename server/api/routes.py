@@ -118,6 +118,19 @@ def get_logs(limit: int = 100) -> dict:
     return {"logs": get_bot_service().get_logs(limit=limit)}
 
 
+@router.post("/api/line/test")
+def test_line_connection() -> dict:
+    bot_service = get_bot_service()
+    connector = bot_service.connector
+    if connector.connector_type != "line_win":
+        raise HTTPException(status_code=400, detail="only available for line_win connector")
+
+    if not hasattr(connector, "get_diagnostics"):
+        raise HTTPException(status_code=400, detail="connector has no diagnostics")
+
+    return connector.get_diagnostics()
+
+
 @router.post("/api/mock/message")
 def mock_message(body: EvaluateRequest) -> dict:
     bot_service = get_bot_service()

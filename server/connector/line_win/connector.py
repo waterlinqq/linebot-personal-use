@@ -6,8 +6,11 @@ import time
 from collections import deque
 
 from server.connector.base import IncomingMessage, LineConnector, MessageHandler
+from server.connector.line_win.com_init import uiautomation_thread_context
 from server.connector.line_win.types import ChatLineMessage
 from server.connector.line_win.ui import LineUIClient
+
+CONNECTOR_VERSION = "2.1"
 
 
 class LineWinConnector(LineConnector):
@@ -19,14 +22,10 @@ class LineWinConnector(LineConnector):
         poll_interval: float = 0.35,
         history_size: int = 300,
     ) -> None:
+        if ui_client is None and sys.platform != "win32":
+            raise RuntimeError("LineWinConnector 僅能在 Windows 上使用，Mac 請用 mock")
+
         self._ui = ui_client
-        if self._ui is None:
-            if sys.platform != "win32":
-                raise RuntimeError("LineWinConnector 僅能在 Windows 上使用，Mac 請用 mock")
-            from server.connector.line_win.ui_automation import WinLineUIClient
-
-            self._ui = WinLineUIClient()
-
         self._poll_interval = poll_interval
         self._history_size = history_size
         self._running = False
@@ -50,7 +49,11 @@ class LineWinConnector(LineConnector):
         self._group_name = group_name
         self._handler = on_message
         self._running = True
-        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread = threading.Thread(
+            target=self._poll_loop,
+            name="linebot-uia-thread",
+            daemon=True,
+        )
         self._thread.start()
 
     def stop_monitoring(self) -> None:
@@ -61,38 +64,63 @@ class LineWinConnector(LineConnector):
         self._connected = False
 
     def send_message(self, text: str) -> None:
+        if self._ui is None:
+            raise RuntimeError("LINE UI 尚未在監控執行緒就緒")
         self._ui.send_text(text)
 
     def is_connected(self) -> bool:
         return self._running and self._connected
 
     def get_diagnostics(self) -> dict:
-        diagnostics = self._ui.get_diagnostics()
+        diagnostics = (
+            self._ui.get_diagnostics()
+            if self._ui is not None
+            else {
+                "window_found": False,
+                "window_name": "",
+                "last_error": "",
+            }
+        )
         diagnostics.update(
             {
+                "connector_version": CONNECTOR_VERSION,
                 "running": self._running,
                 "connected": self._connected,
                 "group_name": self._group_name,
                 "seen_count": len(self._seen),
                 "last_poll_at": self._last_poll_at,
                 "last_error": self._last_error or diagnostics.get("last_error", ""),
+                "monitor_thread": self._thread.name if self._thread else "",
             }
         )
         return diagnostics
 
     def _poll_loop(self) -> None:
-        if sys.platform == "win32":
-            import uiautomation as auto
+        try:
+            if sys.platform == "win32":
+                with uiautomation_thread_context():
+                    if self._ui is None:
+                        from server.connector.line_win.ui_automation import WinLineUIClient
 
-            with auto.UIAutomationInitializerInThread():
-                self._run_poll_loop()
-            return
+                        self._ui = WinLineUIClient()
+                    self._run_poll_loop()
+                return
 
-        self._run_poll_loop()
+            if self._ui is None:
+                raise RuntimeError("缺少 UI client")
+            self._run_poll_loop()
+        except Exception as exc:  # noqa: BLE001
+            self._last_error = str(exc)
+            self._running = False
+            self._connected = False
 
     def _run_poll_loop(self) -> None:
-        if not self._ui.connect():
-            self._last_error = self._ui.get_diagnostics().get("last_error", "連線失敗")
+        if self._ui is None or not self._ui.connect():
+            self._last_error = (
+                self._ui.get_diagnostics().get("last_error", "連線失敗")
+                if self._ui
+                else "LINE UI 未初始化"
+            )
             self._running = False
             return
 
