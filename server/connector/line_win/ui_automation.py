@@ -15,12 +15,15 @@ class WinLineUIClient(LineUIClient):
             raise RuntimeError("WinLineUIClient 僅能在 Windows 上使用")
         self._window: Any = None
         self._last_error = ""
-        self._auto = self._import_uiautomation()
+        self._auto_module: Any = None
 
-    def _import_uiautomation(self) -> Any:
-        import uiautomation as auto  # type: ignore[import-untyped]
+    @property
+    def _auto(self) -> Any:
+        if self._auto_module is None:
+            import uiautomation as auto  # type: ignore[import-untyped]
 
-        return auto
+            self._auto_module = auto
+        return self._auto_module
 
     def connect(self) -> bool:
         self._window = self._find_line_window()

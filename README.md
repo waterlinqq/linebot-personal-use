@@ -60,6 +60,10 @@ python -m server.main --connector auto
 4. 後台點「**開始監控**」（群組名稱欄僅供紀錄）
 5. Bot 會監聽**目前畫面上**的聊天室新訊息並自動回「接」
 
+### 常見錯誤：`CoInitialize has not been called`
+
+監控執行緒已使用 `UIAutomationInitializerInThread` 初始化 COM。若仍出現此錯誤，請更新程式後重啟 Bot。
+
 ### UI 除錯（讀不到訊息時）
 
 ```powershell

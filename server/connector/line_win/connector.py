@@ -81,6 +81,16 @@ class LineWinConnector(LineConnector):
         return diagnostics
 
     def _poll_loop(self) -> None:
+        if sys.platform == "win32":
+            import uiautomation as auto
+
+            with auto.UIAutomationInitializerInThread():
+                self._run_poll_loop()
+            return
+
+        self._run_poll_loop()
+
+    def _run_poll_loop(self) -> None:
         if not self._ui.connect():
             self._last_error = self._ui.get_diagnostics().get("last_error", "連線失敗")
             self._running = False
