@@ -1,6 +1,5 @@
--r requirements.txt
+-r requirements-ocr.txt
 comtypes>=1.4.8
 uiautomation>=2.0.18
 pywin32>=306
-pyautogui>=0.9.54
 psutil>=6.0.0

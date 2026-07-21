@@ -3,4 +3,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 data/linebot.db
+data/ocr_config.json
+data/ocr_preview.png
 .DS_Store

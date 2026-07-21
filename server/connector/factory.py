@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 
 from server.connector.base import LineConnector
 from server.connector.mock import MockConnector
@@ -13,14 +12,19 @@ def create_connector(mode: str | None = None) -> LineConnector:
     if selected == "mock":
         return MockConnector()
 
+    if selected == "ocr":
+        from server.connector.ocr import OcrConnector
+
+        return OcrConnector()
+
     if selected == "line_win":
         from server.connector.line_win import LineWinConnector
 
         return LineWinConnector()
 
-    if selected == "auto" and sys.platform == "win32":
-        from server.connector.line_win import LineWinConnector
+    if selected == "auto" and os.environ.get("LINEBOT_OCR_REGION"):
+        from server.connector.ocr import OcrConnector
 
-        return LineWinConnector()
+        return OcrConnector()
 
     return MockConnector()

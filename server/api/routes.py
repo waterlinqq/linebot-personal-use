@@ -48,6 +48,7 @@ def get_status() -> dict:
         "group_name": status.group_name,
         "processed_count": status.processed_count,
         "replied_count": status.replied_count,
+        "duplicates_suppressed": status.duplicates_suppressed,
         "last_action": status.last_action,
         "connected": bot_service.connector.is_connected(),
     }

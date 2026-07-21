@@ -58,3 +58,19 @@ def test_exclude_keywords() -> None:
     )
     assert result.should_reply is False
     assert result.reason.startswith("excluded_by_keyword")
+
+
+def test_region_matching_ignores_ocr_spaces() -> None:
+    matcher = RegionMatcher(load_default_config())
+    text = "關 廟 柳 營 5000"
+    parsed = parse_message(text)
+    result = matcher.match(
+        is_order=parsed.is_order,
+        raw_text=text,
+        origin=parsed.origin,
+        destination=parsed.destination,
+        price=parsed.price,
+    )
+    assert parsed.is_order is True
+    assert result.should_reply is True
+    assert "台南" in result.matched_regions

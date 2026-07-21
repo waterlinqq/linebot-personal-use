@@ -32,7 +32,9 @@ class RegionMatcher:
         self.config = config
 
     def _text_contains_keyword(self, text: str, keyword: str) -> bool:
-        return keyword in text
+        compact_text = "".join(text.split())
+        compact_keyword = "".join(keyword.split())
+        return compact_keyword in compact_text
 
     def _location_matches(self, location: str | None, text: str) -> tuple[list[str], list[str]]:
         if not location:
@@ -45,7 +47,10 @@ class RegionMatcher:
             for keyword in keywords:
                 if not keyword:
                     continue
-                if keyword in location or self._text_contains_keyword(text, keyword):
+                if (
+                    self._text_contains_keyword(location, keyword)
+                    or self._text_contains_keyword(text, keyword)
+                ):
                     if region_name not in matched_regions:
                         matched_regions.append(region_name)
                     if keyword not in matched_keywords:

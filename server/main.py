@@ -17,9 +17,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="LINE 搶單 Bot")
     parser.add_argument(
         "--connector",
-        choices=["auto", "mock", "line_win"],
+        choices=["auto", "mock", "ocr", "line_win"],
         default=os.environ.get("LINEBOT_CONNECTOR", "auto"),
-        help="連接器模式：auto=Windows 用 LINE.exe，其餘用 mock",
+        help="連接器模式：ocr=跨平台畫面辨識；auto=已校準時 OCR，否則 mock",
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)

@@ -208,7 +208,8 @@
       document.getElementById("connectorType").textContent =
         `連接器：${data.connector_type} / 連線：${data.connected ? "是" : "否"}`;
       document.getElementById("counters").textContent =
-        `已處理 ${data.processed_count} 則 / 已回覆 ${data.replied_count} 則`;
+        `已處理 ${data.processed_count} 則 / 已回覆 ${data.replied_count} 則 / ` +
+        `已阻擋重複 ${data.duplicates_suppressed || 0} 則`;
       document.getElementById("lastAction").textContent =
         data.last_action ? `最後動作：${data.last_action}` : "";
       document.getElementById("diagnostics").textContent =
