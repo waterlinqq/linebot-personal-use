@@ -21,6 +21,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--keyword", default="", help="搜尋包含此文字的控件")
     parser.add_argument("--depth", type=int, default=3, help="輸出控件樹深度")
+    parser.add_argument(
+        "--details",
+        action="store_true",
+        help="檢查 AutomationId、ClassName、Value/Text/Legacy patterns",
+    )
+    parser.add_argument(
+        "--text-only",
+        action="store_true",
+        help="只輸出找到 Name、Value、Text 或 Legacy 文字的控件",
+    )
     args = parser.parse_args()
 
     import uiautomation as auto  # type: ignore[import-untyped]
@@ -50,6 +60,36 @@ def main() -> None:
     )
     print("-" * 60)
 
+    def pattern_text(control: auto.Control) -> str:
+        values: list[str] = []
+        for pattern_id, label, reader in (
+            (auto.PatternId.ValuePattern, "Value", lambda pattern: pattern.Value),
+            (
+                auto.PatternId.TextPattern,
+                "Text",
+                lambda pattern: pattern.DocumentRange.GetText(-1),
+            ),
+            (
+                auto.PatternId.LegacyIAccessiblePattern,
+                "LegacyName",
+                lambda pattern: pattern.Name,
+            ),
+            (
+                auto.PatternId.LegacyIAccessiblePattern,
+                "LegacyValue",
+                lambda pattern: pattern.Value,
+            ),
+        ):
+            try:
+                pattern = control.GetPattern(pattern_id)
+                value = reader(pattern) if pattern else ""
+                value = str(value or "").replace("\n", " ")[:200]
+                if value:
+                    values.append(f"{label}={value!r}")
+            except Exception:  # noqa: BLE001
+                continue
+        return " ".join(values)
+
     def walk(control: auto.Control, depth: int, prefix: str = "") -> None:
         if depth < 0:
             return
@@ -57,7 +97,21 @@ def main() -> None:
             name = (control.Name or "").replace("\n", " ")[:120]
             ctype = control.ControlTypeName
             line = f"{prefix}[{ctype}] {name!r}"
-            if not args.keyword or args.keyword in name:
+            patterns = ""
+            if args.details:
+                line += (
+                    f" AutomationId={control.AutomationId!r}"
+                    f" ClassName={control.ClassName!r}"
+                    f" Rect={control.BoundingRectangle}"
+                )
+                patterns = pattern_text(control)
+                if patterns:
+                    line += f" {patterns}"
+            has_text = bool(name or patterns)
+            if (
+                (not args.text_only or has_text)
+                and (not args.keyword or args.keyword in line)
+            ):
                 print(line)
         except Exception as exc:  # noqa: BLE001
             print(f"{prefix}[?] <error: {exc}>")
@@ -72,7 +126,7 @@ def main() -> None:
 
     walk(window, args.depth)
     print("-" * 60)
-    print("完成。若看不到聊天訊息控件，請開啟目標群組後再跑一次。")
+    print("完成。若 Name 仍為空，請加上 --details 檢查其他文字介面。")
 
 
 if __name__ == "__main__":
