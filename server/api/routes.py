@@ -5,6 +5,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from server.app_state import get_bot_service
+from server.config import infer_region_selection, load_region_catalog
 from server.engine.matcher import MatchConfig
 
 router = APIRouter()
@@ -91,7 +92,24 @@ def stop_bot() -> dict:
 
 @router.get("/api/config")
 def get_config() -> dict:
-    return get_bot_service().get_config().__dict__
+    config = get_bot_service().get_config()
+    payload = config.__dict__
+    catalog = load_region_catalog()
+    payload["region_selection"] = infer_region_selection(config.regions, catalog)
+    return payload
+
+
+@router.get("/api/regions/catalog")
+def get_regions_catalog() -> dict:
+    catalog = load_region_catalog()
+    groups = {
+        "北部": ["台北", "新北", "基隆", "桃園", "新竹", "宜蘭"],
+        "中部": ["苗栗", "台中", "彰化", "南投", "雲林"],
+        "南部": ["嘉義", "台南", "高雄", "屏東"],
+        "東部": ["花蓮", "台東"],
+        "離島": ["澎湖", "金門", "連江"],
+    }
+    return {"groups": groups, "regions": catalog}
 
 
 @router.put("/api/config")

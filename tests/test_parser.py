@@ -22,6 +22,7 @@ from server.engine.parser import parse_message
         ("@辰（客服） 去改時間", False),
         ("收到", False),
         ("快包3500", False),
+        ("台南 1500 發生地震", False),
     ],
 )
 def test_parse_message_order_detection(text: str, expected_order: bool) -> None:

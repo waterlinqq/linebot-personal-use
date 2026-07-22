@@ -25,16 +25,67 @@ class MatchResult:
 
 
 class RegionMatcher:
-    def __init__(self, config: MatchConfig) -> None:
+    def __init__(
+        self,
+        config: MatchConfig,
+        known_keywords: list[str] | None = None,
+    ) -> None:
         self.config = config
+        self.catalog_keywords = list(known_keywords or [])
+        self.known_keywords = self._effective_known_keywords()
 
     def update_config(self, config: MatchConfig) -> None:
         self.config = config
+        self.known_keywords = self._effective_known_keywords()
+
+    def _effective_known_keywords(self) -> list[str]:
+        combined = list(self.catalog_keywords)
+        for keywords in self.config.regions.values():
+            combined.extend(keywords)
+        seen: set[str] = set()
+        result: list[str] = []
+        for keyword in combined:
+            keyword = keyword.strip()
+            if keyword and keyword not in seen:
+                seen.add(keyword)
+                result.append(keyword)
+        return result
 
     def _text_contains_keyword(self, text: str, keyword: str) -> bool:
         compact_text = "".join(text.split())
         compact_keyword = "".join(keyword.split())
         return compact_keyword in compact_text
+
+    def _is_known_location(self, location: str | None) -> bool:
+        if not location:
+            return False
+        compact = "".join(location.split())
+        for keyword in self.known_keywords:
+            if keyword and self._text_contains_keyword(compact, keyword):
+                return True
+        return False
+
+    def _validate_route_locations(
+        self,
+        locations: list[str],
+        origin: str | None,
+        destination: str | None,
+    ) -> MatchResult | None:
+        if len(locations) >= 2:
+            for split_at in range(1, len(locations)):
+                route_origin = "".join(locations[:split_at])
+                route_destination = "".join(locations[split_at:])
+                if self._is_known_location(route_origin) and self._is_known_location(
+                    route_destination
+                ):
+                    return None
+            return MatchResult(should_reply=False, reason="invalid_destination")
+
+        if origin and not self._is_known_location(origin):
+            return MatchResult(should_reply=False, reason="invalid_origin")
+        if destination and not self._is_known_location(destination):
+            return MatchResult(should_reply=False, reason="invalid_destination")
+        return None
 
     def _location_matches(self, location: str | None, text: str) -> tuple[list[str], list[str]]:
         if not location:
@@ -66,6 +117,7 @@ class RegionMatcher:
         origin: str | None,
         destination: str | None,
         price: int | None,
+        locations: list[str] | None = None,
     ) -> MatchResult:
         if not is_order:
             return MatchResult(should_reply=False, reason="not_order")
@@ -84,6 +136,10 @@ class RegionMatcher:
                 return MatchResult(should_reply=False, reason="below_min_price")
             if price > self.config.max_price:
                 return MatchResult(should_reply=False, reason="above_max_price")
+
+        invalid = self._validate_route_locations(locations or [], origin, destination)
+        if invalid is not None:
+            return invalid
 
         origin_regions, origin_keywords = self._location_matches(origin, text)
         dest_regions, dest_keywords = self._location_matches(destination, text)

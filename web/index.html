@@ -101,6 +101,86 @@
       overflow: auto;
       margin-top: 8px;
     }
+    .region-toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .region-toolbar input {
+      flex: 1;
+      min-width: 180px;
+    }
+    .region-summary {
+      margin-bottom: 8px;
+    }
+    .region-picker {
+      max-height: 360px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      background: #fafafa;
+    }
+    .region-group-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--muted);
+      margin: 12px 0 6px;
+    }
+    .region-group-title:first-child {
+      margin-top: 0;
+    }
+    .region-county {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: white;
+      margin-bottom: 8px;
+    }
+    .region-county-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .region-county-header label {
+      margin: 0;
+      font-weight: 600;
+      cursor: pointer;
+      flex: 1;
+    }
+    .region-county-toggle {
+      color: var(--muted);
+      font-size: 12px;
+      width: 16px;
+    }
+    .region-districts {
+      display: none;
+      padding: 0 10px 10px 28px;
+      gap: 6px 12px;
+      grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+    }
+    .region-county.open .region-districts {
+      display: grid;
+    }
+    .region-district {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 13px;
+    }
+    .region-district label {
+      margin: 0;
+      font-weight: 400;
+      cursor: pointer;
+    }
+    .region-county.hidden,
+    .region-group.hidden {
+      display: none;
+    }
     @media (max-width: 900px) {
       .grid { grid-template-columns: 1fr; }
     }
@@ -168,9 +248,12 @@
           <textarea id="excludeKeywords"></textarea>
         </div>
         <div class="field">
-          <label for="regionsJson">地區關鍵字 JSON</label>
-          <textarea id="regionsJson"></textarea>
-          <p class="hint">格式：{"台南":["台南","歸仁"], "高雄":["高雄","鳳山"]}</p>
+          <label for="regionSearch">接單地區</label>
+          <div class="region-toolbar">
+            <input id="regionSearch" type="search" placeholder="搜尋縣市或行政區..." oninput="filterRegionPicker()" />
+          </div>
+          <p id="regionSummary" class="hint region-summary">尚未選擇任何地區</p>
+          <div id="regionPicker" class="region-picker"></div>
         </div>
         <button class="btn-primary" onclick="saveConfig()">儲存設定</button>
         <p id="regionStats" class="hint" style="margin-top: 8px;"></p>
@@ -348,6 +431,229 @@
 
     let statusRefreshTimer = null;
     let actionPending = false;
+    let regionCatalog = null;
+    let regionGroups = null;
+    let regionSelection = {};
+
+    function flattenRegionKeywords(catalogEntry, selectedDistricts) {
+      const keywords = [];
+      const add = (items) => {
+        for (const item of items || []) {
+          if (item && !keywords.includes(item)) {
+            keywords.push(item);
+          }
+        }
+      };
+      if (selectedDistricts === null) {
+        add(catalogEntry.aliases);
+        for (const districtKeywords of Object.values(catalogEntry.districts || {})) {
+          add(districtKeywords);
+        }
+      } else if (selectedDistricts.length > 0) {
+        add(catalogEntry.aliases);
+        for (const districtName of selectedDistricts) {
+          add(catalogEntry.districts[districtName] || []);
+        }
+      }
+      return keywords;
+    }
+
+    function buildRegionsPayload() {
+      const regions = {};
+      for (const [regionName, selectedDistricts] of Object.entries(regionSelection)) {
+        const catalogEntry = regionCatalog[regionName];
+        if (!catalogEntry) {
+          continue;
+        }
+        const keywords = flattenRegionKeywords(catalogEntry, selectedDistricts);
+        if (keywords.length > 0) {
+          regions[regionName] = keywords;
+        }
+      }
+      return regions;
+    }
+
+    function getCountyDistrictNames(regionName) {
+      return Object.keys(regionCatalog[regionName]?.districts || {});
+    }
+
+    function isCountyPartiallySelected(regionName) {
+      const selected = regionSelection[regionName];
+      if (selected === null) {
+        return false;
+      }
+      return Array.isArray(selected) && selected.length > 0
+        && selected.length < getCountyDistrictNames(regionName).length;
+    }
+
+    function updateCountyCheckbox(regionName) {
+      const checkbox = document.querySelector(`[data-county-check="${regionName}"]`);
+      if (!checkbox) {
+        return;
+      }
+      checkbox.checked = regionName in regionSelection;
+      checkbox.indeterminate = isCountyPartiallySelected(regionName);
+    }
+
+    function updateRegionSummary() {
+      const parts = [];
+      for (const [regionName, selectedDistricts] of Object.entries(regionSelection)) {
+        const total = getCountyDistrictNames(regionName).length;
+        if (selectedDistricts === null) {
+          parts.push(`${regionName} 全部 ${total} 區`);
+        } else {
+          parts.push(`${regionName} ${selectedDistricts.length} 區`);
+        }
+      }
+      document.getElementById("regionSummary").textContent = parts.length
+        ? `已選：${parts.join(" / ")}`
+        : "尚未選擇任何地區";
+    }
+
+    function renderRegionPicker() {
+      const container = document.getElementById("regionPicker");
+      if (!regionCatalog || !regionGroups) {
+        container.innerHTML = '<p class="hint">載入地區目錄中...</p>';
+        return;
+      }
+
+      container.innerHTML = Object.entries(regionGroups).map(([groupName, regionNames]) => `
+        <div class="region-group" data-group="${groupName}">
+          <div class="region-group-title">${groupName}</div>
+          ${regionNames.map((regionName) => {
+            const entry = regionCatalog[regionName];
+            if (!entry) {
+              return "";
+            }
+            const districts = Object.keys(entry.districts || {});
+            const selected = regionSelection[regionName];
+            const selectedSet = selected === null
+              ? new Set(districts)
+              : new Set(selected || []);
+            return `
+              <div class="region-county" data-region="${regionName}">
+                <div class="region-county-header" onclick="toggleCountyPanel('${regionName}')">
+                  <span class="region-county-toggle">▶</span>
+                  <input
+                    type="checkbox"
+                    data-county-check="${regionName}"
+                    onclick="event.stopPropagation()"
+                    onchange="toggleCountySelection('${regionName}', this.checked)"
+                  />
+                  <label onclick="event.stopPropagation(); toggleCountyPanel('${regionName}')">${regionName}</label>
+                </div>
+                <div class="region-districts">
+                  ${districts.map((districtName) => `
+                    <div class="region-district" data-district-name="${districtName}">
+                      <input
+                        type="checkbox"
+                        id="district-${regionName}-${districtName}"
+                        data-region="${regionName}"
+                        data-district="${districtName}"
+                        ${selectedSet.has(districtName) ? "checked" : ""}
+                        onchange="toggleDistrictSelection('${regionName}', '${districtName}', this.checked)"
+                      />
+                      <label for="district-${regionName}-${districtName}">${districtName}</label>
+                    </div>
+                  `).join("")}
+                </div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      `).join("");
+
+      for (const regionName of Object.keys(regionSelection)) {
+        updateCountyCheckbox(regionName);
+      }
+      updateRegionSummary();
+    }
+
+    function toggleCountyPanel(regionName) {
+      const panel = document.querySelector(`.region-county[data-region="${regionName}"]`);
+      if (!panel) {
+        return;
+      }
+      panel.classList.toggle("open");
+      panel.querySelector(".region-county-toggle").textContent =
+        panel.classList.contains("open") ? "▼" : "▶";
+    }
+
+    function toggleCountySelection(regionName, checked) {
+      if (checked) {
+        regionSelection[regionName] = null;
+      } else {
+        delete regionSelection[regionName];
+      }
+      renderRegionPicker();
+      filterRegionPicker();
+    }
+
+    function toggleDistrictSelection(regionName, districtName, checked) {
+      const districts = getCountyDistrictNames(regionName);
+      let selected = regionSelection[regionName];
+      if (selected === null) {
+        selected = [...districts];
+      } else if (!Array.isArray(selected)) {
+        selected = [];
+      } else {
+        selected = [...selected];
+      }
+
+      if (checked) {
+        if (!selected.includes(districtName)) {
+          selected.push(districtName);
+        }
+      } else {
+        selected = selected.filter((name) => name !== districtName);
+      }
+
+      if (selected.length === 0) {
+        delete regionSelection[regionName];
+      } else if (selected.length === districts.length) {
+        regionSelection[regionName] = null;
+      } else {
+        regionSelection[regionName] = selected;
+      }
+
+      updateCountyCheckbox(regionName);
+      updateRegionSummary();
+    }
+
+    function filterRegionPicker() {
+      const query = document.getElementById("regionSearch").value.trim().toLowerCase();
+      document.querySelectorAll(".region-county").forEach((countyEl) => {
+        const regionName = countyEl.dataset.region;
+        const entry = regionCatalog?.[regionName];
+        const districtEls = countyEl.querySelectorAll(".region-district");
+        let visibleDistrictCount = 0;
+
+        districtEls.forEach((districtEl) => {
+          const districtName = districtEl.dataset.districtName;
+          const haystack = `${regionName}${districtName}`.toLowerCase();
+          const match = !query || haystack.includes(query) || regionName.toLowerCase().includes(query);
+          districtEl.style.display = match ? "" : "none";
+          if (match) {
+            visibleDistrictCount += 1;
+          }
+        });
+
+        const countyMatch = !query
+          || regionName.toLowerCase().includes(query)
+          || visibleDistrictCount > 0
+          || Object.keys(entry?.districts || {}).some((name) => name.toLowerCase().includes(query));
+        countyEl.classList.toggle("hidden", !countyMatch);
+        if (query && countyMatch && visibleDistrictCount > 0) {
+          countyEl.classList.add("open");
+          countyEl.querySelector(".region-county-toggle").textContent = "▼";
+        }
+      });
+
+      document.querySelectorAll(".region-group").forEach((groupEl) => {
+        const hasVisibleCounty = groupEl.querySelector(".region-county:not(.hidden)");
+        groupEl.classList.toggle("hidden", !hasVisibleCounty);
+      });
+    }
 
     async function runControlAction(action) {
       if (actionPending) {
@@ -381,27 +687,31 @@
     }
 
     async function loadConfig() {
-      const config = await api("/api/config");
-      const stats = await api("/api/config/stats");
+      const [config, stats, catalogData] = await Promise.all([
+        api("/api/config"),
+        api("/api/config/stats"),
+        regionCatalog ? Promise.resolve({ regions: regionCatalog, groups: regionGroups }) : api("/api/regions/catalog"),
+      ]);
+
+      regionCatalog = catalogData.regions;
+      regionGroups = catalogData.groups;
+      regionSelection = config.region_selection || {};
+
       document.getElementById("matchMode").value = config.match_mode;
       document.getElementById("replyText").value = config.reply_text;
       document.getElementById("excludeKeywords").value =
         (config.exclude_keywords || []).join("\n");
-      document.getElementById("regionsJson").value =
-        JSON.stringify(config.regions || {}, null, 2);
-      document.getElementById("regionStats").textContent =
-        Object.entries(stats).map(([k, v]) => `${k}: ${v} 個關鍵字`).join(" / ");
+
+      renderRegionPicker();
+      filterRegionPicker();
+
+      const statsText = Object.keys(stats).length
+        ? Object.entries(stats).map(([k, v]) => `${k}: ${v} 個關鍵字`).join(" / ")
+        : "尚未啟用任何地區";
+      document.getElementById("regionStats").textContent = statsText;
     }
 
     async function saveConfig() {
-      let regions;
-      try {
-        regions = JSON.parse(document.getElementById("regionsJson").value);
-      } catch (err) {
-        alert("地區 JSON 格式錯誤");
-        return;
-      }
-
       const excludeKeywords = document
         .getElementById("excludeKeywords")
         .value
@@ -417,9 +727,10 @@
           min_price: 0,
           max_price: 999999,
           exclude_keywords: excludeKeywords,
-          regions,
+          regions: buildRegionsPayload(),
         }),
       });
+      await loadConfig();
       alert("設定已儲存");
     }
 

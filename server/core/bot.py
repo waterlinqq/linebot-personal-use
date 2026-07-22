@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 
-from server.config import resolve_startup_config
+from server.config import flatten_all_keywords, load_region_catalog, merge_region_keywords, resolve_startup_config
 from server.connector.base import IncomingMessage, LineConnector
 from server.connector.mock import MockConnector
 from server.db.database import get_connection, init_db, insert_message_log, load_match_config, save_match_config
@@ -34,10 +34,14 @@ class BotService:
 
         stored = load_match_config(self._conn)
         defaults = config
-        self.config = resolve_startup_config(stored, defaults)
+        self._catalog = load_region_catalog()
+        self.config = resolve_startup_config(stored, defaults, self._catalog)
         save_match_config(self._conn, self.config)
 
-        self.matcher = RegionMatcher(self.config)
+        self.matcher = RegionMatcher(
+            self.config,
+            known_keywords=flatten_all_keywords(self._catalog),
+        )
         self.connector = connector or MockConnector()
         self.status = BotStatus(connector_type=self.connector.connector_type)
         self._replied_order_signatures: set[str] = set()
@@ -48,9 +52,9 @@ class BotService:
 
     def update_config(self, config: MatchConfig) -> None:
         with self._lock:
-            self.config = config
-            self.matcher.update_config(config)
-            save_match_config(self._conn, config)
+            self.config = merge_region_keywords(config, self._catalog)
+            self.matcher.update_config(self.config)
+            save_match_config(self._conn, self.config)
 
     def start(self, group_name: str) -> BotStatus:
         with self._lock:
@@ -110,6 +114,7 @@ class BotService:
                 origin=parsed.origin,
                 destination=parsed.destination,
                 price=parsed.price,
+                locations=parsed.locations,
             )
 
             replied = False
@@ -207,6 +212,7 @@ class BotService:
             origin=parsed.origin,
             destination=parsed.destination,
             price=parsed.price,
+            locations=parsed.locations,
         )
         return {
             "text": text,

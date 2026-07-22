@@ -77,7 +77,29 @@ NOISE_TOKENS = {
     "2+",
     "2➕",
     "5+",
+    "發生",
+    "地震",
+    "颱風",
+    "通知",
+    "注意",
+    "警告",
+    "快訊",
+    "快讯",
+    "急件",
+    "取消",
+    "改時間",
+    "改时间",
 }
+
+NON_LOCATION_SUBSTRINGS = (
+    "發生",
+    "地震",
+    "颱風",
+    "通知",
+    "警告",
+    "快訊",
+    "快讯",
+)
 
 
 @dataclass
@@ -101,6 +123,8 @@ def _is_noise_token(token: str) -> bool:
     if not token:
         return True
     if token in NOISE_TOKENS:
+        return True
+    if any(part in token for part in NON_LOCATION_SUBSTRINGS):
         return True
     if token.isdigit():
         return True

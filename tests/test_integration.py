@@ -1,11 +1,20 @@
-from server.config import load_default_config
+from server.config import load_config_with_regions, load_default_config
 from server.connector.mock import MockConnector
 from server.core.bot import BotService
 
 
+SOUTHERN_COUNTIES = ["嘉義", "台南", "高雄", "屏東"]
+
+
+def _make_bot(connector):
+    bot = BotService(load_default_config(), connector=connector)
+    bot.update_config(load_config_with_regions(SOUTHERN_COUNTIES))
+    return bot
+
+
 def test_bot_replies_for_southern_order() -> None:
     connector = MockConnector()
-    bot = BotService(load_default_config(), connector=connector)
+    bot = _make_bot(connector)
     bot.start("測試群組")
 
     connector.inject_message("07.03 14:00 小港 小港 5300", sender="不明")
@@ -22,7 +31,7 @@ def test_bot_replies_for_southern_order() -> None:
 
 def test_bot_skips_northern_order() -> None:
     connector = MockConnector()
-    bot = BotService(load_default_config(), connector=connector)
+    bot = _make_bot(connector)
     bot.start("測試群組")
 
     connector.inject_message("07.04 8.00 三峽 蘆洲 4100", sender="辰（客服）")
@@ -36,7 +45,7 @@ def test_bot_skips_northern_order() -> None:
 
 
 def test_evaluate_endpoint_logic() -> None:
-    bot = BotService(load_default_config(), connector=MockConnector())
+    bot = _make_bot(MockConnector())
     result = bot.evaluate_text("07.01 15:00 歸仁 歸仁 3000")
     assert result["is_order"] is True
     assert result["should_reply"] is True
@@ -49,7 +58,7 @@ def test_reply_failure_is_logged_without_stopping_bot() -> None:
             raise RuntimeError("沒有輔助使用權限")
 
     connector = FailingConnector()
-    bot = BotService(load_default_config(), connector=connector)
+    bot = _make_bot(connector)
     bot.start("測試群組")
 
     connector.inject_message("關廟 柳營 5000")
@@ -67,10 +76,7 @@ def test_reply_failure_is_logged_without_stopping_bot() -> None:
 
 def test_semantic_duplicate_order_replies_only_once() -> None:
     connector = MockConnector()
-    bot = BotService(
-        load_default_config(),
-        connector=connector,
-    )
+    bot = _make_bot(connector)
     bot.start("測試群組")
 
     connector.inject_message("15:40 wei 高雄 台南 3000")
@@ -92,7 +98,7 @@ def test_semantic_duplicate_order_replies_only_once() -> None:
 
 def test_same_order_at_different_times_can_reply_again() -> None:
     connector = MockConnector()
-    bot = BotService(load_default_config(), connector=connector)
+    bot = _make_bot(connector)
     bot.start("測試群組")
 
     connector.inject_message("15:40 wei 高雄 台南 3000")
