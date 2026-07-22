@@ -96,6 +96,11 @@
     }
     .ok { color: #166534; font-weight: 700; }
     .no { color: #991b1b; }
+    .session-records-wrap {
+      max-height: 320px;
+      overflow: auto;
+      margin-top: 8px;
+    }
     @media (max-width: 900px) {
       .grid { grid-template-columns: 1fr; }
     }
@@ -114,14 +119,31 @@
         <span id="counters" class="hint"></span>
       </div>
       <div class="status-row" style="margin-top: 12px; flex-direction: column; align-items: stretch;">
-        <p class="hint" style="margin: 6px 0 0;">Windows：請先在 LINE 手動點開目標群組，再按「開始監控」。</p>
+        <p id="controlHint" class="hint" style="margin: 6px 0 0;"></p>
         <div class="status-row" style="margin-top: 8px;">
-          <button class="btn-primary" onclick="startBot()">開始監控</button>
-          <button class="btn-danger" onclick="stopBot()">停止監控</button>
+          <button id="primaryActionBtn" class="btn-primary" onclick="handlePrimaryAction()">開始掃描歷史</button>
+          <button id="secondaryActionBtn" class="btn-danger" style="display: none;" onclick="handleSecondaryAction()">取消</button>
           <button class="btn-secondary" onclick="refreshAll()">重新整理</button>
         </div>
       </div>
       <p id="lastAction" class="hint" style="margin-top: 8px;"></p>
+      <div id="sessionRecordsCard" style="display: none; margin-top: 12px;">
+        <h3 style="margin: 0 0 8px; font-size: 16px;">Session 已記錄訊息</h3>
+        <p id="sessionRecordsHint" class="hint" style="margin: 0 0 8px;">
+          Phase 1 scroll 時，畫面上 OCR 辨識到的訊息會列在這裡（僅本 session 記憶體，不寫入資料庫）。
+        </p>
+        <div class="session-records-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 56px;">#</th>
+                <th>內容</th>
+              </tr>
+            </thead>
+            <tbody id="sessionRecordsBody"></tbody>
+          </table>
+        </div>
+      </div>
       <pre id="diagnostics" class="hint" style="white-space: pre-wrap; margin-top: 8px;"></pre>
     </div>
 
@@ -151,7 +173,6 @@
           <p class="hint">格式：{"台南":["台南","歸仁"], "高雄":["高雄","鳳山"]}</p>
         </div>
         <button class="btn-primary" onclick="saveConfig()">儲存設定</button>
-        <button class="btn-secondary" onclick="reloadDefaults()">合併最新預設地區</button>
         <p id="regionStats" class="hint" style="margin-top: 8px;"></p>
       </div>
 
@@ -201,23 +222,162 @@
       return res.json();
     }
 
+    function resolveUiState(data) {
+      const isOcr = data.connector_type === "ocr";
+      const phase = data.diagnostics?.phase;
+      if (!data.running) {
+        return isOcr ? "ocr_idle" : "idle";
+      }
+      if (isOcr && phase === "baseline") {
+        return "ocr_baseline";
+      }
+      if (isOcr && phase === "monitoring") {
+        return "ocr_monitoring";
+      }
+      return "monitoring";
+    }
+
+    function applyControlState(state) {
+      const hint = document.getElementById("controlHint");
+      const primaryActionBtn = document.getElementById("primaryActionBtn");
+      const secondaryActionBtn = document.getElementById("secondaryActionBtn");
+
+      primaryActionBtn.style.display = "inline-block";
+      secondaryActionBtn.style.display = "none";
+      primaryActionBtn.disabled = false;
+      secondaryActionBtn.disabled = false;
+
+      switch (state) {
+        case "ocr_idle":
+          hint.textContent =
+            "請先在 LINE 開啟目標群組，再按「開始掃描歷史」。掃描時可在 LINE scroll 瀏覽歷史。";
+          primaryActionBtn.textContent = "開始掃描歷史";
+          primaryActionBtn.className = "btn-primary";
+          break;
+        case "ocr_baseline":
+          hint.textContent =
+            "正在掃描歷史：請在 LINE scroll，確認下方列表已涵蓋後，按「完成掃描，開始偵測」。";
+          primaryActionBtn.textContent = "完成掃描，開始偵測";
+          primaryActionBtn.className = "btn-primary";
+          secondaryActionBtn.style.display = "inline-block";
+          secondaryActionBtn.textContent = "取消掃描";
+          secondaryActionBtn.className = "btn-danger";
+          break;
+        case "ocr_monitoring":
+          hint.textContent = "正在自動偵測新派單並回覆。";
+          primaryActionBtn.style.display = "none";
+          secondaryActionBtn.style.display = "inline-block";
+          secondaryActionBtn.textContent = "停止偵測";
+          secondaryActionBtn.className = "btn-danger";
+          break;
+        case "idle":
+          hint.textContent = "請先在 LINE 開啟目標群組，再按「開始監控」。";
+          primaryActionBtn.textContent = "開始監控";
+          primaryActionBtn.className = "btn-primary";
+          break;
+        case "monitoring":
+          hint.textContent = "監控進行中。";
+          primaryActionBtn.style.display = "none";
+          secondaryActionBtn.style.display = "inline-block";
+          secondaryActionBtn.textContent = "停止監控";
+          secondaryActionBtn.className = "btn-danger";
+          break;
+      }
+    }
+
     function setStatus(data) {
+      const uiState = resolveUiState(data);
       const badge = document.getElementById("statusBadge");
-      badge.textContent = data.running ? "監控中" : "停止中";
-      badge.className = "badge " + (data.running ? "on" : "off");
+      const phase = data.diagnostics?.phase;
+      const badgeMap = {
+        ocr_idle: ["待機", "off"],
+        idle: ["待機", "off"],
+        ocr_baseline: ["掃描歷史中", "on"],
+        ocr_monitoring: ["偵測中", "on"],
+        monitoring: ["監控中", "on"],
+      };
+      const [badgeText, badgeClass] = badgeMap[uiState] || ["待機", "off"];
+      badge.textContent = badgeText;
+      badge.className = "badge " + badgeClass;
       document.getElementById("connectorType").textContent =
-        `連接器：${data.connector_type} / 連線：${data.connected ? "是" : "否"}`;
+        `連接器：${data.connector_type} / 連線：${data.connected ? "是" : "否"}` +
+        (phase ? ` / 階段：${phase}` : "");
       document.getElementById("counters").textContent =
         `已處理 ${data.processed_count} 則 / 已回覆 ${data.replied_count} 則 / ` +
-        `已阻擋重複 ${data.duplicates_suppressed || 0} 則`;
+        `已阻擋重複 ${data.duplicates_suppressed || 0} 則` +
+        (data.diagnostics?.session_seen != null
+          ? ` / 已記錄 ${data.diagnostics.session_seen} 則`
+          : "");
       document.getElementById("lastAction").textContent =
         data.last_action ? `最後動作：${data.last_action}` : "";
+
+      const sessionRecords = data.diagnostics?.session_records || [];
+      const sessionRecordsCard = document.getElementById("sessionRecordsCard");
+      const sessionRecordsBody = document.getElementById("sessionRecordsBody");
+      const isOcr = data.connector_type === "ocr";
+      if (isOcr && (uiState === "ocr_baseline" || uiState === "ocr_monitoring")) {
+        sessionRecordsCard.style.display = "block";
+        if (sessionRecords.length === 0) {
+          sessionRecordsBody.innerHTML = `
+            <tr>
+              <td colspan="2" class="hint">尚無記錄，請在 LINE scroll 瀏覽歷史。</td>
+            </tr>
+          `;
+        } else {
+          sessionRecordsBody.innerHTML = sessionRecords.map((text, index) => `
+            <tr>
+              <td>${index + 1}</td>
+              <td>${escapeHtml(text)}</td>
+            </tr>
+          `).join("");
+        }
+      } else {
+        sessionRecordsCard.style.display = "none";
+        sessionRecordsBody.innerHTML = "";
+      }
+
+      const diagnosticsForDisplay = data.diagnostics
+        ? { ...data.diagnostics, session_records: `[${sessionRecords.length} 則，見上方列表]` }
+        : null;
       document.getElementById("diagnostics").textContent =
-        data.diagnostics ? JSON.stringify(data.diagnostics, null, 2) : "";
+        diagnosticsForDisplay ? JSON.stringify(diagnosticsForDisplay, null, 2) : "";
+
+      scheduleStatusRefresh(data);
+      applyControlState(uiState);
+    }
+
+    let statusRefreshTimer = null;
+    let actionPending = false;
+
+    async function runControlAction(action) {
+      if (actionPending) {
+        return;
+      }
+      actionPending = true;
+      const primaryActionBtn = document.getElementById("primaryActionBtn");
+      const secondaryActionBtn = document.getElementById("secondaryActionBtn");
+      primaryActionBtn.disabled = true;
+      secondaryActionBtn.disabled = true;
+      try {
+        await action();
+      } finally {
+        actionPending = false;
+        await refreshStatus();
+      }
+    }
+
+    function scheduleStatusRefresh(data) {
+      if (statusRefreshTimer) {
+        clearInterval(statusRefreshTimer);
+      }
+      const intervalMs = resolveUiState(data) === "ocr_baseline" ? 1000 : 5000;
+      statusRefreshTimer = setInterval(refreshStatus, intervalMs);
     }
 
     async function refreshStatus() {
-      setStatus(await api("/api/status"));
+      const data = await api("/api/status");
+      setStatus(data);
+      return data;
     }
 
     async function loadConfig() {
@@ -231,12 +391,6 @@
         JSON.stringify(config.regions || {}, null, 2);
       document.getElementById("regionStats").textContent =
         Object.entries(stats).map(([k, v]) => `${k}: ${v} 個關鍵字`).join(" / ");
-    }
-
-    async function reloadDefaults() {
-      await api("/api/config/reload-defaults", { method: "POST" });
-      await loadConfig();
-      alert("已合併最新預設地區關鍵字");
     }
 
     async function saveConfig() {
@@ -269,15 +423,47 @@
       alert("設定已儲存");
     }
 
+    async function handlePrimaryAction() {
+      await runControlAction(async () => {
+        const data = await api("/api/status");
+        const uiState = resolveUiState(data);
+        if (uiState === "ocr_idle") {
+          await api("/api/start", { method: "POST", body: JSON.stringify({}) });
+          return;
+        }
+        if (uiState === "ocr_baseline") {
+          await api("/api/start-detection", { method: "POST" });
+          return;
+        }
+        if (uiState === "idle") {
+          await api("/api/start", { method: "POST", body: JSON.stringify({}) });
+        }
+      });
+    }
+
+    async function handleSecondaryAction() {
+      await runControlAction(async () => {
+        await api("/api/stop", { method: "POST" });
+      });
+    }
+
     async function startBot() {
-      setStatus(await api("/api/start", {
+      await api("/api/start", {
         method: "POST",
         body: JSON.stringify({}),
-      }));
+      });
+      await refreshStatus();
+    }
+
+    async function startDetection() {
+      await api("/api/start-detection", { method: "POST" });
+      await refreshStatus();
     }
 
     async function stopBot() {
-      setStatus(await api("/api/stop", { method: "POST" }));
+      await runControlAction(async () => {
+        await api("/api/stop", { method: "POST" });
+      });
     }
 
     async function evaluateText() {
@@ -331,7 +517,6 @@
     }
 
     refreshAll();
-    setInterval(refreshStatus, 5000);
   </script>
 </body>
 </html>

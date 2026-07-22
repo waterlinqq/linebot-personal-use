@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 
-from server.config import load_default_config, merge_region_keywords, resolve_startup_config
+from server.config import resolve_startup_config
 from server.connector.base import IncomingMessage, LineConnector
 from server.connector.mock import MockConnector
 from server.db.database import get_connection, init_db, insert_message_log, load_match_config, save_match_config
@@ -52,14 +52,6 @@ class BotService:
             self.matcher.update_config(config)
             save_match_config(self._conn, config)
 
-    def reload_default_regions(self) -> MatchConfig:
-        with self._lock:
-            defaults = load_default_config()
-            self.config = merge_region_keywords(self.config, defaults)
-            self.matcher.update_config(self.config)
-            save_match_config(self._conn, self.config)
-            return self.config
-
     def start(self, group_name: str) -> BotStatus:
         with self._lock:
             if self.status.running:
@@ -70,8 +62,32 @@ class BotService:
             self._replied_order_signatures.clear()
             self._replied_untimed_signatures.clear()
             self.status.running = True
-            self.status.last_action = "started"
+            self.status.last_action = (
+                "baseline_started"
+                if self.connector.connector_type == "ocr"
+                else "started"
+            )
             self.connector.start_monitoring(group_name, self._handle_message)
+            return self.status
+
+    def begin_detection(self) -> BotStatus:
+        with self._lock:
+            if not self.status.running:
+                self.status.last_action = "not_running"
+                return self.status
+
+            activate = getattr(self.connector, "activate_monitoring", None)
+            if not callable(activate):
+                self.status.last_action = "already_monitoring"
+                return self.status
+
+            try:
+                activate()
+            except RuntimeError as exc:
+                self.status.last_action = f"activation_failed:{exc}"
+                return self.status
+
+            self.status.last_action = "monitoring_started"
             return self.status
 
     def stop(self) -> BotStatus:

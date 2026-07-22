@@ -13,7 +13,7 @@ from typing import Protocol
 
 from server.connector.base import IncomingMessage, LineConnector, MessageHandler
 
-CONNECTOR_VERSION = "1.7"
+CONNECTOR_VERSION = "1.10"
 OCR_CONFIG_PATH = Path(__file__).resolve().parents[2] / "data" / "ocr_config.json"
 
 
@@ -82,6 +82,7 @@ class ScreenPoint:
 class OcrBlock:
     text: str
     fingerprint: str
+    bottom_y: int = 0
 
 
 class OcrSource(Protocol):
@@ -99,6 +100,23 @@ def normalize_ocr_text(text: str) -> str:
 def ocr_fingerprint(text: str) -> str:
     normalized = normalize_ocr_text(text)
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()
+
+
+def ocr_blocks_from_texts(*texts: str) -> list[OcrBlock]:
+    return [
+        OcrBlock(
+            text=text,
+            fingerprint=ocr_fingerprint(text),
+            bottom_y=index,
+        )
+        for index, text in enumerate(texts)
+    ]
+
+
+def bottom_most_block(blocks: list[OcrBlock]) -> OcrBlock | None:
+    if not blocks:
+        return None
+    return max(blocks, key=lambda block: block.bottom_y)
 
 
 def find_message_bubble_boxes(image) -> list[tuple[int, int, int, int]]:
@@ -241,12 +259,12 @@ class TesseractScreenSource:
         blocks: list[OcrBlock] = []
         bubble_boxes = find_message_bubble_boxes(image)
         targets = (
-            [(image.crop(box), 7) for box in bubble_boxes]
+            [(image.crop(box), 7, box[3]) for box in bubble_boxes]
             if bubble_boxes
-            else [(image, 11)]
+            else [(image, 11, image.height)]
         )
 
-        for target, page_mode in targets:
+        for target, page_mode, bottom_y in targets:
             prepared = ImageOps.grayscale(target)
             prepared = ImageOps.expand(prepared, border=4, fill=255)
             prepared = prepared.resize(
@@ -287,7 +305,11 @@ class TesseractScreenSource:
                 if len(text) < 2:
                     continue
                 blocks.append(
-                    OcrBlock(text=text, fingerprint=ocr_fingerprint(text))
+                    OcrBlock(
+                        text=text,
+                        fingerprint=ocr_fingerprint(text),
+                        bottom_y=bottom_y,
+                    )
                 )
         return blocks
 
@@ -359,7 +381,6 @@ class OcrConnector(LineConnector):
         confirmation_interval: float = 0.15,
         change_threshold: float = 0.01,
         stable_frames: int = 2,
-        absent_frames: int = 3,
     ) -> None:
         self._source = source or self._source_from_environment()
         self._sender = sender or self._sender_from_environment()
@@ -369,14 +390,14 @@ class OcrConnector(LineConnector):
         self._confirmation_interval = confirmation_interval
         self._change_threshold = change_threshold
         self._stable_frames = max(1, stable_frames)
-        self._absent_frames = max(1, absent_frames)
         self._running = False
         self._connected = False
+        self._monitoring = False
+        self._phase_lock = threading.Lock()
         self._handler: MessageHandler | None = None
         self._thread: threading.Thread | None = None
-        self._accepted_fingerprints: set[str] = set()
+        self._session_records: dict[str, str] = {}
         self._candidate_counts: dict[str, int] = {}
-        self._missing_counts: dict[str, int] = {}
         self._last_error = ""
         self._last_poll_at = ""
         self._blocks_seen = 0
@@ -412,6 +433,18 @@ class OcrConnector(LineConnector):
             self._thread.join(timeout=3)
             self._thread = None
         self._connected = False
+        self._monitoring = False
+
+    def activate_monitoring(self) -> None:
+        """Phase 2：使用者手動切換，開始偵測新訊息。"""
+        if not self._running:
+            raise RuntimeError("尚未開始 Phase 1 掃描")
+        with self._phase_lock:
+            if self._monitoring:
+                return
+            self._candidate_counts.clear()
+            self._monitoring = True
+            self._last_signature = self._capture_signature()
 
     def send_message(self, text: str) -> None:
         try:
@@ -426,12 +459,18 @@ class OcrConnector(LineConnector):
         return self._running and self._connected
 
     def get_diagnostics(self) -> dict:
+        phase = "idle"
+        if self._running:
+            phase = "monitoring" if self._monitoring else "baseline"
         return {
             "connector_version": CONNECTOR_VERSION,
             "running": self._running,
             "connected": self._connected,
+            "phase": phase,
             "blocks_seen": self._blocks_seen,
-            "visible_blocks": len(self._accepted_fingerprints),
+            "session_seen": len(self._session_records),
+            "session_records": list(self._session_records.values()),
+            "monitoring": self._monitoring,
             "candidate_blocks": len(self._candidate_counts),
             "stable_frames_required": self._stable_frames,
             "poll_interval_ms": round(self._poll_interval * 1000),
@@ -446,77 +485,98 @@ class OcrConnector(LineConnector):
             "monitor_thread": self._thread.name if self._thread else "",
         }
 
+    def _remember_block(self, block: OcrBlock) -> None:
+        self._session_records[block.fingerprint] = block.text
+
+    def _process_baseline_frame(self, blocks: list[OcrBlock]) -> None:
+        """Phase 1：只累積畫面上看得到的訊息，不觸發 handler。"""
+        for block in blocks:
+            self._remember_block(block)
+
+    def _process_monitoring_frame(self, blocks: list[OcrBlock]) -> None:
+        """Phase 2：只對最底部且穩定的新訊息觸發 handler。"""
+        current = {block.fingerprint: block for block in blocks}
+        for fingerprint in list(self._candidate_counts):
+            if fingerprint not in current:
+                del self._candidate_counts[fingerprint]
+
+        bottom_block = bottom_most_block(blocks)
+        emit_block: OcrBlock | None = None
+
+        for block in blocks:
+            fingerprint = block.fingerprint
+            if fingerprint in self._session_records:
+                continue
+
+            count = self._candidate_counts.get(fingerprint, 0) + 1
+            self._candidate_counts[fingerprint] = count
+            if count < self._stable_frames:
+                continue
+
+            self._candidate_counts.pop(fingerprint, None)
+            self._remember_block(block)
+            if (
+                bottom_block is not None
+                and block.fingerprint == bottom_block.fingerprint
+            ):
+                emit_block = block
+
+        if emit_block and self._handler:
+            self._blocks_seen += 1
+            self._handler(IncomingMessage(text=emit_block.text))
+
+    def _should_run_ocr(self, confirming_candidate: bool) -> bool:
+        if not self._uses_change_detection or confirming_candidate:
+            return True
+
+        signature = self._capture_signature()
+        if not self._screen_changed(self._last_signature, signature):
+            time.sleep(self._screenshot_interval)
+            return False
+
+        time.sleep(self._change_debounce)
+        self._last_signature = self._capture_signature()
+        return True
+
     def _poll_loop(self) -> None:
         try:
             activate_target = getattr(self._source, "activate_target", None)
             if callable(activate_target):
                 activate_target()
-            initial = self._read_blocks()
-            self._accepted_fingerprints = {
-                block.fingerprint for block in initial
-            }
+            self._session_records.clear()
+            self._candidate_counts.clear()
             self._blocks_seen = 0
-            self._last_signature = self._capture_signature()
+            self._monitoring = False
             self._connected = True
+
+            initial_blocks = self._read_blocks()
+            self._process_baseline_frame(initial_blocks)
+            self._last_signature = self._capture_signature()
 
             while self._running:
                 self._last_poll_at = time.strftime("%Y-%m-%d %H:%M:%S")
-                confirming_candidate = bool(self._candidate_counts)
-                if self._uses_change_detection and not confirming_candidate:
-                    signature = self._capture_signature()
-                    if not self._screen_changed(self._last_signature, signature):
-                        time.sleep(self._screenshot_interval)
-                        continue
-                    time.sleep(self._change_debounce)
-                    self._last_signature = self._capture_signature()
+                confirming_candidate = (
+                    self._monitoring and bool(self._candidate_counts)
+                )
+                if not self._should_run_ocr(confirming_candidate):
+                    continue
 
                 blocks = self._read_blocks()
-                current = {block.fingerprint: block for block in blocks}
-
-                for fingerprint in list(self._candidate_counts):
-                    if fingerprint not in current:
-                        del self._candidate_counts[fingerprint]
-
-                for block in blocks:
-                    fingerprint = block.fingerprint
-                    if fingerprint in self._accepted_fingerprints:
-                        self._missing_counts.pop(fingerprint, None)
-                        continue
-
-                    count = self._candidate_counts.get(fingerprint, 0) + 1
-                    self._candidate_counts[fingerprint] = count
-                    if count < self._stable_frames:
-                        continue
-
-                    self._candidate_counts.pop(fingerprint, None)
-                    self._accepted_fingerprints.add(fingerprint)
-                    self._blocks_seen += 1
-                    if self._handler:
-                        self._handler(IncomingMessage(text=block.text))
+                if self._monitoring:
+                    self._process_monitoring_frame(blocks)
+                else:
+                    self._process_baseline_frame(blocks)
 
                 if self._reset_after_send:
-                    # 等待自己的訊息出現在畫面後，重新建立完整基準。
+                    # 等待自己的訊息出現在畫面後，補進 session 記憶。
                     time.sleep(0.5)
-                    refreshed = self._read_blocks()
-                    self._accepted_fingerprints = {
-                        block.fingerprint for block in refreshed
-                    }
+                    for block in self._read_blocks():
+                        self._remember_block(block)
                     self._candidate_counts.clear()
-                    self._missing_counts.clear()
                     self._last_signature = self._capture_signature()
                     self._reset_after_send = False
                     time.sleep(self._screenshot_interval)
                     continue
-
-                for fingerprint in list(self._accepted_fingerprints):
-                    if fingerprint in current:
-                        continue
-                    missing = self._missing_counts.get(fingerprint, 0) + 1
-                    if missing >= self._absent_frames:
-                        self._accepted_fingerprints.remove(fingerprint)
-                        self._missing_counts.pop(fingerprint, None)
-                    else:
-                        self._missing_counts[fingerprint] = missing
 
                 delay = (
                     self._confirmation_interval
@@ -534,6 +594,7 @@ class OcrConnector(LineConnector):
             self._last_error = str(exc)
             self._running = False
             self._connected = False
+        self._monitoring = False
 
     def _read_blocks(self) -> list[OcrBlock]:
         started = time.perf_counter()

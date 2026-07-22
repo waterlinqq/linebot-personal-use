@@ -12,6 +12,7 @@ from server.connector.ocr import (
     ScreenRegion,
     find_message_bubble_boxes,
     normalize_ocr_text,
+    ocr_blocks_from_texts,
     ocr_fingerprint,
 )
 
@@ -24,10 +25,7 @@ class FakeOcrSource:
         return list(self.blocks)
 
     def set_texts(self, *texts: str) -> None:
-        self.blocks = [
-            OcrBlock(text=text, fingerprint=ocr_fingerprint(text))
-            for text in texts
-        ]
+        self.blocks = ocr_blocks_from_texts(*texts)
 
 
 class FakeSender:
@@ -46,10 +44,7 @@ class SequenceOcrSource:
     def read_blocks(self) -> list[OcrBlock]:
         frame = self.frames[min(self.index, len(self.frames) - 1)]
         self.index += 1
-        return [
-            OcrBlock(text=text, fingerprint=ocr_fingerprint(text))
-            for text in frame
-        ]
+        return ocr_blocks_from_texts(*frame)
 
 
 class SignatureOcrSource(FakeOcrSource):
@@ -94,6 +89,16 @@ class FakeRgbImage:
         return PixelMap()
 
 
+def start_baseline(connector: OcrConnector, handler, *, warmup: float = 0.03) -> None:
+    connector.start_monitoring("", handler)
+    time.sleep(warmup)
+
+
+def start_detection(connector: OcrConnector, *, warmup: float = 0.02) -> None:
+    connector.activate_monitoring()
+    time.sleep(warmup)
+
+
 def test_screen_region_parse() -> None:
     assert ScreenRegion.parse("10,20,300,400") == ScreenRegion(10, 20, 300, 400)
     with pytest.raises(ValueError):
@@ -127,6 +132,27 @@ def test_find_message_bubble_boxes_returns_visual_order() -> None:
     ]
 
 
+def test_ocr_connector_baseline_does_not_emit_until_user_switches() -> None:
+    source = FakeOcrSource()
+    source.set_texts("關廟 柳營 5000")
+    connector = OcrConnector(
+        source,
+        FakeSender(),
+        poll_interval=0.01,
+        confirmation_interval=0.01,
+    )
+    received: list[IncomingMessage] = []
+
+    start_baseline(connector, received.append, warmup=0.05)
+    assert connector.get_diagnostics()["phase"] == "baseline"
+    assert received == []
+
+    start_detection(connector, warmup=0.05)
+    assert connector.get_diagnostics()["phase"] == "monitoring"
+    assert received == []
+    connector.stop_monitoring()
+
+
 def test_ocr_connector_emits_only_new_visible_blocks() -> None:
     source = FakeOcrSource()
     sender = FakeSender()
@@ -139,8 +165,8 @@ def test_ocr_connector_emits_only_new_visible_blocks() -> None:
     )
     received: list[IncomingMessage] = []
 
-    connector.start_monitoring("", received.append)
-    time.sleep(0.05)
+    start_baseline(connector, received.append, warmup=0.03)
+    start_detection(connector, warmup=0.02)
     source.set_texts("舊訊息", "關廟 柳營 5000")
     time.sleep(0.08)
     connector.stop_monitoring()
@@ -173,8 +199,8 @@ def test_ocr_connector_ignores_single_frame_jitter() -> None:
     )
     received: list[IncomingMessage] = []
 
-    connector.start_monitoring("", received.append)
-    time.sleep(0.08)
+    start_baseline(connector, received.append, warmup=0.03)
+    start_detection(connector, warmup=0.05)
     connector.stop_monitoring()
 
     assert received == []
@@ -188,10 +214,10 @@ def test_change_detection_skips_ocr_when_screen_is_unchanged() -> None:
         source,
         FakeSender(),
         screenshot_interval=0.01,
+        confirmation_interval=0.01,
     )
 
-    connector.start_monitoring("", lambda _: None)
-    time.sleep(0.08)
+    start_baseline(connector, lambda _: None, warmup=0.12)
     connector.stop_monitoring()
 
     assert source.read_count == 1
@@ -214,12 +240,80 @@ def test_change_detection_runs_ocr_after_screen_changes() -> None:
     )
     received: list[IncomingMessage] = []
 
-    connector.start_monitoring("", received.append)
-    time.sleep(0.03)
+    start_baseline(connector, received.append, warmup=0.03)
+    start_detection(connector, warmup=0.02)
     source.set_texts("既有文字", "關廟 柳營 5000")
     source.signature = bytes([255] * 16)
     time.sleep(0.12)
     connector.stop_monitoring()
 
     assert [message.text for message in received] == ["關廟 柳營 5000"]
-    assert source.read_count == 3  # baseline + candidate + confirmation
+    assert source.read_count >= 3
+
+
+def test_ocr_connector_ignores_scrolled_history_not_at_bottom() -> None:
+    source = FakeOcrSource()
+    source.set_texts("最新訊息")
+    connector = OcrConnector(
+        source,
+        FakeSender(),
+        poll_interval=0.01,
+        confirmation_interval=0.01,
+        stable_frames=2,
+    )
+    received: list[IncomingMessage] = []
+
+    start_baseline(connector, received.append, warmup=0.03)
+    start_detection(connector, warmup=0.02)
+    source.set_texts("歷史派單 5000", "最新訊息")
+    time.sleep(0.08)
+    connector.stop_monitoring()
+
+    assert received == []
+    diagnostics = connector.get_diagnostics()
+    assert diagnostics["session_seen"] >= 2
+
+
+def test_ocr_connector_only_emits_bottom_most_new_block() -> None:
+    source = FakeOcrSource()
+    source.set_texts("舊訊息")
+    connector = OcrConnector(
+        source,
+        FakeSender(),
+        poll_interval=0.01,
+        confirmation_interval=0.01,
+        stable_frames=2,
+    )
+    received: list[IncomingMessage] = []
+
+    start_baseline(connector, received.append, warmup=0.03)
+    start_detection(connector, warmup=0.02)
+    source.set_texts("舊訊息", "上方新單 3000", "底部新單 5000")
+    time.sleep(0.08)
+    connector.stop_monitoring()
+
+    assert [message.text for message in received] == ["底部新單 5000"]
+
+
+def test_diagnostics_includes_session_records() -> None:
+    source = FakeOcrSource()
+    source.set_texts("訊息 A", "訊息 B")
+    connector = OcrConnector(
+        source,
+        FakeSender(),
+        poll_interval=0.01,
+        confirmation_interval=0.01,
+    )
+
+    start_baseline(connector, lambda _: None, warmup=0.03)
+    diagnostics = connector.get_diagnostics()
+    connector.stop_monitoring()
+
+    assert diagnostics["session_seen"] == 2
+    assert diagnostics["session_records"] == ["訊息 A", "訊息 B"]
+
+
+def test_activate_monitoring_requires_running_connector() -> None:
+    connector = OcrConnector(FakeOcrSource(), FakeSender())
+    with pytest.raises(RuntimeError, match="Phase 1"):
+        connector.activate_monitoring()

@@ -69,6 +69,16 @@ def start_bot(body: StartRequest) -> dict:
     }
 
 
+@router.post("/api/start-detection")
+def start_detection() -> dict:
+    bot_service = get_bot_service()
+    status = bot_service.begin_detection()
+    return {
+        "running": status.running,
+        "last_action": status.last_action,
+    }
+
+
 @router.post("/api/stop")
 def stop_bot() -> dict:
     bot_service = get_bot_service()
@@ -99,11 +109,6 @@ def update_config(body: ConfigUpdate) -> dict:
     )
     get_bot_service().update_config(config)
     return config.__dict__
-
-
-@router.post("/api/config/reload-defaults")
-def reload_default_regions() -> dict:
-    return get_bot_service().reload_default_regions().__dict__
 
 
 @router.get("/api/config/stats")
