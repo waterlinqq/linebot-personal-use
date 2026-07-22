@@ -4,6 +4,7 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from server.config import flatten_all_keywords, load_region_catalog
 from server.connector.base import IncomingMessage, LineConnector, MessageHandler
 
 CONNECTOR_VERSION = "1.10"
@@ -36,7 +38,7 @@ def save_ocr_config(
             {
                 "region": region,
                 "input_point": input_point,
-                "language": "chi_tra+eng",
+                "language": "chi_tra",
             },
             file,
             ensure_ascii=False,
@@ -95,6 +97,148 @@ class TextSender(Protocol):
 
 def normalize_ocr_text(text: str) -> str:
     return " ".join(text.replace("\n", " ").split()).strip()
+
+
+def _compact_keyword(keyword: str) -> str:
+    return "".join(keyword.split())
+
+
+def build_keyword_regions(
+    catalog: dict | None = None,
+) -> tuple[set[str], list[str], dict[str, set[str]]]:
+    catalog = catalog or load_region_catalog()
+    keyword_set: set[str] = set()
+    keyword_regions: dict[str, set[str]] = {}
+
+    for region_name, entry in catalog.items():
+        for alias in entry.get("aliases", []):
+            compact = _compact_keyword(alias)
+            if compact:
+                keyword_set.add(compact)
+                keyword_regions.setdefault(compact, set()).add(region_name)
+        for district_name, district_keywords in entry.get("districts", {}).items():
+            keyword_set.add(district_name)
+            keyword_regions.setdefault(district_name, set()).add(region_name)
+            for keyword in district_keywords:
+                compact = _compact_keyword(keyword)
+                if compact:
+                    keyword_set.add(compact)
+                    keyword_regions.setdefault(compact, set()).add(region_name)
+
+    keywords_sorted = sorted(keyword_set, key=len, reverse=True)
+    return keyword_set, keywords_sorted, keyword_regions
+
+
+def _best_fuzzy_keyword_match(
+    chunk: str,
+    keyword_set: set[str],
+    keyword_regions: dict[str, set[str]],
+    previous_regions: set[str],
+    *,
+    max_distance: int = 1,
+) -> str | None:
+    candidates: list[tuple[bool, int, str]] = []
+    for keyword in keyword_set:
+        if len(keyword) != len(chunk):
+            continue
+        distance = sum(left != right for left, right in zip(chunk, keyword))
+        if distance > max_distance:
+            continue
+        same_region = bool(previous_regions.intersection(keyword_regions.get(keyword, set())))
+        candidates.append((same_region, distance, keyword))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+    return candidates[0][2]
+
+
+def _segment_known_keywords(compact_text: str, keywords_sorted: list[str]) -> list[str]:
+    segments: list[str] = []
+    position = 0
+    while position < len(compact_text):
+        matched = next(
+            (
+                keyword
+                for keyword in keywords_sorted
+                if compact_text.startswith(keyword, position)
+            ),
+            None,
+        )
+        if matched:
+            segments.append(matched)
+            position += len(matched)
+            continue
+
+        literal_start = position
+        position += 1
+        while position < len(compact_text) and not any(
+            compact_text.startswith(keyword, position) for keyword in keywords_sorted
+        ):
+            position += 1
+        segments.append(compact_text[literal_start:position])
+    return segments
+
+
+def correct_ocr_text(
+    text: str,
+    known_keywords: list[str] | None = None,
+    *,
+    catalog: dict | None = None,
+) -> str:
+    """以地名詞彙修正 OCR 錯字，保留非地名的字面片段（例如 楠梓加工）。"""
+    normalized = normalize_ocr_text(text)
+    price_match = re.search(r"\d{3,5}", normalized)
+    if not price_match:
+        return normalized
+
+    price = price_match.group(0)
+    location_text = (
+        normalized[: price_match.start()] + normalized[price_match.end() :]
+    ).strip()
+    location_compact = re.sub(
+        r"[^\u4e00-\u9fff]",
+        "",
+        location_text.replace("臺", "台"),
+    )
+    if not location_compact:
+        return normalized
+
+    if known_keywords is None:
+        keyword_set, keywords_sorted, keyword_regions = build_keyword_regions(catalog)
+    else:
+        keyword_set = {_compact_keyword(keyword) for keyword in known_keywords}
+        keyword_set.discard("")
+        keywords_sorted = sorted(keyword_set, key=len, reverse=True)
+        _, _, keyword_regions = build_keyword_regions(catalog)
+
+    corrected_segments: list[str] = []
+    previous_regions: set[str] = set()
+    for segment in _segment_known_keywords(location_compact, keywords_sorted):
+        if segment in keyword_set:
+            corrected_segments.append(segment)
+            previous_regions |= keyword_regions.get(segment, set())
+            continue
+
+        if 2 <= len(segment) <= 4 and re.fullmatch(r"[\u4e00-\u9fff]+", segment):
+            fuzzy_match = _best_fuzzy_keyword_match(
+                segment,
+                keyword_set,
+                keyword_regions,
+                previous_regions,
+            )
+            if fuzzy_match:
+                corrected_segments.append(fuzzy_match)
+                previous_regions |= keyword_regions.get(fuzzy_match, set())
+                continue
+
+        corrected_segments.append(segment)
+
+    if not corrected_segments:
+        return normalized
+
+    return normalize_ocr_text(" ".join(corrected_segments) + f" {price}")
 
 
 def ocr_fingerprint(text: str) -> str:
@@ -181,12 +325,14 @@ class TesseractScreenSource:
         self,
         region: ScreenRegion,
         *,
-        language: str = "chi_tra+eng",
+        language: str = "chi_tra",
         tesseract_cmd: str = "",
+        known_keywords: list[str] | None = None,
     ) -> None:
         self.region = region
         self.language = language
         self.tesseract_cmd = tesseract_cmd
+        self.known_keywords = known_keywords
 
     def activate_target(self) -> None:
         if os.sys.platform == "darwin":
@@ -304,6 +450,7 @@ class TesseractScreenSource:
                 text = normalize_ocr_text(" ".join(word for _, word in words))
                 if len(text) < 2:
                     continue
+                text = correct_ocr_text(text, self.known_keywords)
                 blocks.append(
                     OcrBlock(
                         text=text,
@@ -643,12 +790,13 @@ class OcrConnector(LineConnector):
             ScreenRegion.parse(region_value),
             language=(
                 os.environ.get("LINEBOT_OCR_LANG")
-                or config.get("language", "chi_tra+eng")
+                or config.get("language", "chi_tra")
             ),
             tesseract_cmd=(
                 os.environ.get("LINEBOT_TESSERACT_CMD")
                 or config.get("tesseract_cmd", "")
             ),
+            known_keywords=flatten_all_keywords(load_region_catalog()),
         )
 
     @staticmethod

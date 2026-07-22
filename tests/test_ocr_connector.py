@@ -10,11 +10,13 @@ from server.connector.ocr import (
     OcrConnector,
     ScreenPoint,
     ScreenRegion,
+    correct_ocr_text,
     find_message_bubble_boxes,
     normalize_ocr_text,
     ocr_blocks_from_texts,
     ocr_fingerprint,
 )
+from server.config import flatten_all_keywords, load_region_catalog
 
 
 class FakeOcrSource:
@@ -113,6 +115,22 @@ def test_screen_point_parse() -> None:
 
 def test_normalize_ocr_text() -> None:
     assert normalize_ocr_text("  關 廟\n 柳 營   5000 ") == "關 廟 柳 營 5000"
+
+
+def test_correct_ocr_text_fixes_nearby_district_names() -> None:
+    keywords = flatten_all_keywords(load_region_catalog())
+
+    assert correct_ocr_text("旗 津 大 察 1000", keywords) == "旗津 大寮 1000"
+    assert correct_ocr_text("楠 梓 台 南 1000", keywords) == "楠梓 台南 1000"
+    assert (
+        correct_ocr_text("楠 梓 加 工 1000 台 南", keywords)
+        == "楠梓 加工 台南 1000"
+    )
+
+
+def test_correct_ocr_text_keeps_unknown_latin_tokens() -> None:
+    keywords = flatten_all_keywords(load_region_catalog())
+    assert correct_ocr_text("Hit GPA 1000", keywords) == "Hit GPA 1000"
 
 
 def test_find_message_bubble_boxes_returns_visual_order() -> None:
